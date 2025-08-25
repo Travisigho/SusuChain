@@ -146,3 +146,274 @@
         ),
     }
 )
+
+;; public functions
+(define-public (create-round)
+    (let (
+            (new-round-id (+ (var-get round-id) u1))
+            (start-block stacks-block-height)
+            (end-block (+ stacks-block-height
+                (* (var-get round-duration) (var-get max-participants))
+            ))
+        )
+        (asserts! (is-contract-owner) err-owner-only)
+        (map-set rounds { round-id: new-round-id } {
+            start-block: start-block,
+            end-block: end-block,
+            total-pool: u0,
+            participants: (list),
+            paid-participants: (list),
+            current-winner: none,
+            is-active: true,
+            week-counter: u0,
+        })
+        (var-set round-id new-round-id)
+        (ok new-round-id)
+    )
+)
+
+(define-public (join-round (target-round-id uint))
+    (let (
+            (round-data (unwrap! (map-get? rounds { round-id: target-round-id })
+                err-not-found
+            ))
+            (current-participants (get participants round-data))
+            (participant-count (len current-participants))
+        )
+        (asserts! (get is-active round-data) err-round-not-active)
+        (asserts! (< participant-count (var-get max-participants))
+            err-round-active
+        )
+        (asserts! (not (list-contains tx-sender current-participants))
+            err-already-exists
+        )
+
+        (map-set rounds { round-id: target-round-id }
+            (merge round-data { participants: (add-to-list tx-sender current-participants) })
+        )
+
+        (map-set participant-status {
+            round-id: target-round-id,
+            participant: tx-sender,
+        } {
+            has-contributed: false,
+            contribution-week: u0,
+            has-been-winner: false,
+            total-contributed: u0,
+        })
+
+        (map-set participant-rounds { participant: tx-sender } {
+            active-round: (some target-round-id),
+            round-count: (+
+                (default-to u0
+                    (get round-count
+                        (map-get? participant-rounds { participant: tx-sender })
+                    ))
+                u1
+            ),
+        })
+
+        (ok true)
+    )
+)
+
+(define-public (contribute (target-round-id uint))
+    (let (
+            (round-data (unwrap! (map-get? rounds { round-id: target-round-id })
+                err-not-found
+            ))
+            (participant-data (unwrap!
+                (map-get? participant-status {
+                    round-id: target-round-id,
+                    participant: tx-sender,
+                })
+                err-not-participant
+            ))
+            (contribution-amt (var-get contribution-amount))
+            (current-week (/ (- stacks-block-height (get start-block round-data))
+                (var-get round-duration)
+            ))
+        )
+        (asserts! (get is-active round-data) err-round-not-active)
+        (asserts! (not (get has-contributed participant-data)) err-already-exists)
+        (asserts! (list-contains tx-sender (get participants round-data))
+            err-not-participant
+        )
+
+        (try! (stx-transfer? contribution-amt tx-sender (as-contract tx-sender)))
+
+        (map-set participant-status {
+            round-id: target-round-id,
+            participant: tx-sender,
+        }
+            (merge participant-data {
+                has-contributed: true,
+                contribution-week: current-week,
+                total-contributed: (+ (get total-contributed participant-data) contribution-amt),
+            })
+        )
+
+        (map-set rounds { round-id: target-round-id }
+            (merge round-data { total-pool: (+ (get total-pool round-data) contribution-amt) })
+        )
+
+        (ok true)
+    )
+)
+
+(define-public (select-winner (target-round-id uint))
+    (let (
+            (round-data (unwrap! (map-get? rounds { round-id: target-round-id })
+                err-not-found
+            ))
+            (participants (get participants round-data))
+            (paid-participants (get paid-participants round-data))
+            (eligible-participants (get-eligible-participants-list participants paid-participants))
+            (eligible-count (len eligible-participants))
+            (current-week (/ (- stacks-block-height (get start-block round-data))
+                (var-get round-duration)
+            ))
+        )
+        (asserts! (is-contract-owner) err-owner-only)
+        (asserts! (get is-active round-data) err-round-not-active)
+        (asserts! (> eligible-count u0) err-round-not-ready)
+        (asserts! (> current-week (get week-counter round-data))
+            err-round-not-ready
+        )
+
+        (let (
+                (random-index (get-pseudo-random (- stacks-block-height u1) eligible-count))
+                (winner (unwrap-panic (element-at eligible-participants random-index)))
+                (payout-amount (get total-pool round-data))
+            )
+            (try! (as-contract (stx-transfer? payout-amount tx-sender winner)))
+
+            (map-set participant-status {
+                round-id: target-round-id,
+                participant: winner,
+            }
+                (merge
+                    (unwrap-panic (map-get? participant-status {
+                        round-id: target-round-id,
+                        participant: winner,
+                    })) { has-been-winner: true }
+                ))
+
+            (map-set rounds { round-id: target-round-id }
+                (merge round-data {
+                    current-winner: (some winner),
+                    paid-participants: (add-to-list winner paid-participants),
+                    total-pool: u0,
+                    week-counter: current-week,
+                    is-active: (< (len (add-to-list winner paid-participants))
+                        (len participants)
+                    ),
+                })
+            )
+
+            (ok winner)
+        )
+    )
+)
+
+(define-public (end-round (target-round-id uint))
+    (let ((round-data (unwrap! (map-get? rounds { round-id: target-round-id }) err-not-found)))
+        (asserts! (is-contract-owner) err-owner-only)
+        (asserts!
+            (or
+                (>= stacks-block-height (get end-block round-data))
+                (is-eq (len (get paid-participants round-data))
+                    (len (get participants round-data))
+                )
+            )
+            err-round-active
+        )
+
+        (map-set rounds { round-id: target-round-id }
+            (merge round-data { is-active: false })
+        )
+
+        (ok true)
+    )
+)
+
+(define-public (set-contribution-amount (new-amount uint))
+    (begin
+        (asserts! (is-contract-owner) err-owner-only)
+        (asserts! (> new-amount u0) err-invalid-amount)
+        (var-set contribution-amount new-amount)
+        (ok true)
+    )
+)
+
+(define-public (set-max-participants (new-max uint))
+    (begin
+        (asserts! (is-contract-owner) err-owner-only)
+        (asserts! (and (> new-max u0) (<= new-max u52)) err-invalid-amount)
+        (var-set max-participants new-max)
+        (ok true)
+    )
+)
+
+;; read only functions
+(define-read-only (get-round (target-round-id uint))
+    (map-get? rounds { round-id: target-round-id })
+)
+
+(define-read-only (get-participant-status
+        (target-round-id uint)
+        (participant principal)
+    )
+    (map-get? participant-status {
+        round-id: target-round-id,
+        participant: participant,
+    })
+)
+
+(define-read-only (get-participant-rounds (participant principal))
+    (map-get? participant-rounds { participant: participant })
+)
+
+(define-read-only (get-current-round-id)
+    (var-get round-id)
+)
+
+(define-read-only (get-contribution-amount)
+    (var-get contribution-amount)
+)
+
+(define-read-only (get-max-participants)
+    (var-get max-participants)
+)
+
+(define-read-only (get-round-duration)
+    (var-get round-duration)
+)
+
+(define-read-only (is-participant
+        (target-round-id uint)
+        (participant principal)
+    )
+    (match (map-get? rounds { round-id: target-round-id })
+        round-data (list-contains participant (get participants round-data))
+        false
+    )
+)
+
+(define-read-only (get-eligible-participants (target-round-id uint))
+    (match (map-get? rounds { round-id: target-round-id })
+        round-data (get-eligible-participants-list (get participants round-data)
+            (get paid-participants round-data)
+        )
+        (list)
+    )
+)
+
+(define-read-only (get-current-week (target-round-id uint))
+    (match (map-get? rounds { round-id: target-round-id })
+        round-data (/ (- stacks-block-height (get start-block round-data))
+            (var-get round-duration)
+        )
+        u0
+    )
+)
