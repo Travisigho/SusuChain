@@ -130,11 +130,75 @@ clarinet deploy --testnet
 
 ## Testing
 
-The project includes comprehensive unit tests covering:
-- Round creation and management
-- Participant joining and contribution
-- Winner selection logic
-- Error handling and edge cases
+The project includes a comprehensive test suite with **31 test cases** covering all contract functionality:
+
+### Test Coverage
+
+**Contract Initialization (2 tests)**
+- Simnet environment verification
+- Initial contract state validation (contribution amounts, participant limits, round duration)
+
+**Round Creation (3 tests)**
+- Owner-only round creation permissions
+- Non-owner access prevention
+- Sequential round ID management
+
+**Participant Management (4 tests)**
+- Round joining functionality
+- Duplicate participant prevention
+- Non-existent round error handling
+- Multiple participant support
+
+**Contribution System (3 tests)**
+- STX contribution mechanics
+- Non-participant contribution blocking
+- Duplicate contribution prevention
+
+**Winner Selection (4 tests)**
+- Pseudo-random winner selection algorithm
+- Owner-only selection enforcement
+- STX pool transfer verification (3M STX = 3 STX)
+- Insufficient participants handling
+
+**Round Management (3 tests)**
+- Round termination functionality
+- Owner permission validation
+- Premature ending prevention
+
+**Configuration Management (5 tests)**
+- Contribution amount configuration
+- Max participants setting
+- Invalid parameter rejection
+- Owner-only configuration access
+
+**Read-Only Functions (6 tests)**
+- Round data retrieval
+- Participant status queries
+- Participant verification
+- Eligible participants listing
+- Current week calculation
+
+**Integration Testing (1 test)**
+- Complete round cycle workflow
+
+### Running Tests
+
+All tests use Vitest with Clarinet SDK integration and achieve **100% pass rate**:
+
+```bash
+npm test                 # Run all tests
+npm run test:report     # Run with coverage and costs
+npm run test:watch      # Watch mode for continuous testing
+```
+
+### Test Features
+
+- **Multi-wallet simulation**: Tests use multiple Stacks addresses for realistic scenarios
+- **STX transfer verification**: Validates actual blockchain token transfers
+- **Time simulation**: Block advancement for testing time-dependent logic
+- **Error code validation**: Comprehensive error handling verification
+- **State management**: Contract state changes properly validated
+- **Security testing**: Access control and permission validation
 
 ## Contributing
 
